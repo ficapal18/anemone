@@ -26,7 +26,8 @@ class Similarity:
 
     # Tokenizes an array of strings and gives an array of arrays of strings as output
     def tokenize_documents(self, documents, language='english'):
-        translator = str.maketrans('', '', string.punctuation)
+        punct_array = string.punctuation + "”’•"
+        translator = str.maketrans('', '', punct_array)
         gen_docs = [
             [w.lower() for w in word_tokenize(text.translate(translator)) if w.lower() not in stopwords.words(language)]
             for text in documents]
@@ -91,18 +92,27 @@ class Similarity:
         self.lda = lda
         return lda
 
-    def query_to_lda(self, doc, document_files):
-        print("\nSearching Query:", doc)
-
-        vec_bow = self.dictionary.doc2bow(doc.lower().split())
+    def query_to_lda(self, doc, document_files=[], language='english', k=20, verbose = True):
+        punct_array = string.punctuation + "”’•"
+        translator = str.maketrans('', '', punct_array)
+        gen_docs = [w.lower() for w in word_tokenize(doc.translate(translator)) if w.lower() not in stopwords.words(language)]
+        vec_bow = self.dictionary.doc2bow(gen_docs)#doc.lower().split())
         vec_lsi = self.lda[vec_bow]  # convert the query to LSI space
 
+        top_k = {}
         sims = self.lda_index[vec_lsi]
         sims = sorted(enumerate(sims), key=lambda item: -item[1])
-        print("\nSimilar Documents:")
-        for i in range(0,50):
+        if verbose:
+            print("\nSearching Query:", doc)
+            print("\nSimilar Documents:")
+        for i in range(0,k):
             idx, prob = sims[i]
-            print(i+1,str('{0:.2f}'.format(prob)),"\t", document_files.iloc[idx]["head"])
+            if verbose:
+                print(i+1,str('{0:.2f}'.format(prob)),"\t", document_files.iloc[idx]["head"])
+            top_k[i]={}
+            top_k[i]['idx'] = idx
+            top_k[i]['prob'] = prob
+        return top_k
 
     def query_to_tf_idf(self, doc, document_files):
         print("\nSearching Query:", doc)

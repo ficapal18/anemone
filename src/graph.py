@@ -8,35 +8,141 @@ import webbrowser
 import sys
 import itertools
 
-
+# make it with only merge not create unique
+# MERGE (n { name:"X" })-[r:RELATED]->(m) DELETE r, n, m;
 class GraphObject:
 
-    def __init__(self, entities, ent2idx):
+    def __init__(self, entities={}, ent2idx={}, documents=[]):
         self.entities = entities
         self.ent2idx = ent2idx
+        self.documents = documents
         self.nodes = []
         self.user = 'neo4j'
         self.password = "f1234567"
 
         self.launchneo4j(popup=False)
-        ################################### self.graph.delete_all()
+        ####################### self.graph.delete_all()
 
-    def add_ent_to_doc(self, document):
-        n_document = {'properties': {"name": ("Doc " + str(document.id)), "title": document.head}, 'type': 'DOCUMENT',
-                  'node_name': "doc" }#+ str(document.id) # ''.join(['`',document.head,'`'])
+    def populate(self, entities, ent2idx, documents, queries):
+        self.entities = entities
+        self.ent2idx = ent2idx
+        self.documents = documents
+        self.queries = queries
+
+    def add_ent_to_doc(self, document, type='DOCUMENT'):
+        n_document = {'properties': {"name": ("Doc " + str(document.id)), "title": document.head}, 'type': type,
+                  'node_name': "doc" }
+        count = 0
         n_entities = []
+        entities = []
         for entity in document.entities:
-            n_entities.append({'properties': {"name": str(self.entities[entity].text)}, 'type': self.entities[entity].label, 'node_name': ''.join(['`',str(self.entities[entity].text),self.entities[entity].label,'`'])})
+            node_name = ''.join(['`', str(self.entities[entity].text), self.entities[entity].label, '`'])
+            if node_name not in entities:
+                entities.append(node_name)
+                n_entities.append({'properties': {"name": str(self.entities[entity].text)}, 'type': self.entities[entity].label, 'node_name': node_name})
+                count += 1
+            # I do it by batches because it blocks otherwise
+            if count>5:
+                self.match_relationship(n_document, n_entities, 'APPEARS_IN')
+                count=0
+                n_entities = []
+        if count >= 1:
+            self.match_relationship(n_document, n_entities, 'APPEARS_IN')
 
-        self.match_relationship(n_document, n_entities, 'APPEARS_IN')
-
+    #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ do match at the beggining to identify the document, then refer to it
     def match_relationship(self, n_document, n_entities, relationship):
+        # Build the queries in form of strings to be able to add all the entities at once to a document.
+        CREATE_entities_string = ['''MERGE ('''+n_document['node_name']+''':'''+n_document['type']+''' {name: "'''+n_document['properties']['name']+'''", title: "'''+n_document['properties']['title']+'''"})\n''']
+        for num, node in enumerate(n_entities):
+            #MERGE_str = '''MERGE ('''+node['node_name']+''':'''+node['type']+''' {name: "'''+node['properties']['name']+'''"})'''
+            ##############################CREATE_str = '''MERGE ('''+n_document['node_name']+str(num)+''':'''+n_document['type']+''' {name: "'''+n_document['properties']['name']+'''", title: "'''+n_document['properties']['title']+'''"})'''+'''<-[:'''+relationship+''']-('''+node['node_name']+''':'''+node['type']+''' {name: "'''+node['properties']['name']+'''"})'''
+            CREATE_str = '''MERGE ('''+n_document['node_name']+''')''' + '''<-[:''' + relationship + ''']-(''' + node['node_name'] + ''':''' + node['type'] + ''' {name: "''' + node['properties']['name'] + '''"})'''
+            #MERGE_entities_string.append(MERGE_str)
+
+            if num == len(n_entities)-1:
+                #CREATE_str += ''';'''
+                CREATE_str += ''''''
+
+            else:
+                ##########CREATE_str += '''\nMERGE '''
+                CREATE_str += '''\n'''
+            CREATE_entities_string.append(CREATE_str)
+
+
+        #MERGE_entities_string = '''\n'''.join(MERGE_entities_string)
+        CREATE_entities_string = ''''''.join(CREATE_entities_string)        #print(CREATE_entities_string)
+
+        query = CREATE_entities_string
+        #print(query)
+        self.graph.evaluate(query)
+
+    def match_relationship_GOOD(self, n_document, n_entities, relationship):
+        # Build the queries in form of strings to be able to add all the entities at once to a document.
+        MERGE_entities_string = ['''MERGE ('''+n_document['node_name']+''':'''+n_document['type']+''' {name: "'''+n_document['properties']['name']+'''", title: "'''+n_document['properties']['title']+'''"})''']
+        CREATE_entities_string =[]
+        print("aaaaaaaaaaaaaaaaaaaaaaa")
+        for num, node in enumerate(n_entities):
+            MERGE_str = '''MERGE ('''+node['node_name']+''':'''+node['type']+''' {name: "'''+node['properties']['name']+'''"})'''
+            CREATE_str = '''('''+n_document['node_name']+''')<-[:'''+relationship+''']-('''+node['node_name']+''')'''
+            MERGE_entities_string.append(MERGE_str)
+
+            if num == len(n_entities)-1:
+                CREATE_str += ''';'''
+                ################3CREATE_str += ''''''
+
+            else:
+                ##########CREATE_str += '''\nMERGE '''
+                CREATE_str += ''','''
+            CREATE_entities_string.append(CREATE_str)
+
+
+        MERGE_entities_string = '''\n'''.join(MERGE_entities_string)
+        CREATE_entities_string = '''\n'''.join(['CREATE UNIQUE ', '''\n'''.join(CREATE_entities_string)])        #print(CREATE_entities_string)
+        ###################3#CREATE_entities_string = '''\n'''.join(['MERGE ', '''\n'''.join(CREATE_entities_string)])        #print(CREATE_entities_string)
+
+        query = ''''''.join([MERGE_entities_string,CREATE_entities_string])
+        print(query)
+        self.graph.evaluate(query)
+
+    def add_similarity_to_doc(self, document, type='DOCUMENT'):
+        n_document = {'properties': {"name": ("Doc " + str(document.id)), "title": document.head}, 'type': type,
+                  'node_name': "doc" }#+ str(document.id) # ''.join(['`',document.head,'`'])
+        count = 0
+        relationship = []
+        n_documents = []
+        for key, similar_document in document.similarities.items():
+            prob = document.similarities[key]['prob']
+            idx = document.similarities[key]['idx']
+            if idx < len(self.documents) and idx != document.id:
+                n_documents.append({'properties': {"name": "Doc " + str(self.documents[idx].id)}, 'type': 'DOCUMENT', 'node_name': ''.join(['`',str(self.documents[idx].head),'`'])})
+                relationship.append("""SIMILAR_TO{prob:"""+str(prob)+"""}""")
+                count +=1
+        if count >= 1:
+            self.match_similarity_relationship(n_document, n_documents, relationship)
+
+    def add_similarity_to_query(self, query, type='QUERY'):
+        n_document = {'properties': {"name": ("Doc " + str(query.id)), "title": query.head}, 'type': type,
+                  'node_name': "doc" }#+ str(document.id) # ''.join(['`',document.head,'`'])
+        count = 0
+        relationship = []
+        n_documents = []
+        for key, similar_document in query.similarities.items():
+            prob = query.similarities[key]['prob']
+            idx = query.similarities[key]['idx']
+            if idx < len(self.documents):
+                n_documents.append({'properties': {"name": "Doc " + str(self.documents[idx].id)}, 'type': 'DOCUMENT', 'node_name': ''.join(['`',str(self.queries[idx].head),'`'])})
+                relationship.append("""SIMILAR_TO{prob:"""+str(prob)+"""}""")
+                count +=1
+        if count >= 1:
+            self.match_similarity_relationship(n_document, n_documents, relationship)
+
+    def match_similarity_relationship(self, n_document, n_entities, relationship):
         # Build the queries in form of strings to be able to add all the entities at once to a document.
         MERGE_entities_string = ['''MERGE ('''+n_document['node_name']+''':'''+n_document['type']+''' {name: "'''+n_document['properties']['name']+'''", title: "'''+n_document['properties']['title']+'''"})''']
         CREATE_entities_string =[]
         for num, node in enumerate(n_entities):
             MERGE_str = '''MERGE ('''+node['node_name']+''':'''+node['type']+''' {name: "'''+node['properties']['name']+'''"})'''
-            CREATE_str = '''('''+n_document['node_name']+''')<-[:'''+relationship+''']-('''+node['node_name']+''')'''
+            CREATE_str = '''('''+n_document['node_name']+''')<-[:'''+relationship[num]+''']-('''+node['node_name']+''')'''
             MERGE_entities_string.append(MERGE_str)
 
             if num == len(n_entities)-1:
@@ -50,14 +156,6 @@ class GraphObject:
         #print(CREATE_entities_string)
 
         query = ''''''.join([MERGE_entities_string,CREATE_entities_string])
-        #print(query)
-        """
-        query ='''
-           MERGE ('''+n_document['node_name']+''':'''+n_document['type']+''' {name: "'''+n_document['properties']['name']+''','''+n_document['properties']['title']+'''"})
-           MERGE ('''+n2['node_name']+''':'''+n2['type']+''' {name: "'''+n2['properties']['name']+'''"})
-           CREATE UNIQUE ('''+n1['node_name']+''')-[:'''+relationship+''']->('''+n2['node_name']+''')
-        '''
-        """
         self.graph.evaluate(query)
 
     # Entities should be an array of entity objects
@@ -86,7 +184,7 @@ class GraphObject:
         #WHERE_entities_string += '''\nRETURN collect(n) as nodes, collect(r) as sublinks'''
 
         query = WHERE_entities_string
-        print(query)
+        #print(query)
         response = self.graph.evaluate(query)
 
         return response

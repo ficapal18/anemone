@@ -3,6 +3,7 @@ import cmd
 import sys
 import re
 import os
+import pickle
 
 from nltk.tokenize import StanfordTokenizer
 
@@ -14,6 +15,7 @@ from src.document import Document
 from src.graph import GraphObject
 from src.similarity import Similarity
 from src.prompt import Prompt
+from src.query import Query
 
 #inv_map = {v: k for k, v in my_map.items()}
 class Main:
@@ -27,9 +29,16 @@ class Main:
 
         self.documents = []
         self.counter_documents = 0
+        self.amount_documents = 80000#1000
+
+        self.queries = []
+        self.counter_queries = 0
 
         self.spacy_instance = sp.SpaCy()
         self.similarity_object = Similarity()
+        self.graph_instance = GraphObject()
+
+        self.ent_doc_dataset_path = './data/ent_doc_dataset/ent_doc_dataset_path.pickle'
 
     def main(self, path_documents):
 
@@ -38,6 +47,29 @@ class Main:
         #self.create_and_train_similarity(path_documents, similarity_object)
 
         #self.train_models(path_documents)
+
+
+        self.similarity_object.load_dictionary()
+
+        self.similarity_object.load_lda()
+        self.similarity_object.load_lda_index()
+
+        #self.show_topics(self.similarity_object.lda, 70, self.similarity_object.dictionary)
+
+
+        #self.similarity_object.load_corpus()
+
+        #self.similarity_object.load_tf_idf()
+        #self.similarity_object.load_tf_idf_index()
+
+        #self.similarity_object.tf_idf_similarity_matrix()
+        #self.similarity_object.tf_idf_train()
+
+
+        """
+        import time
+        import sent2vec
+
 
         sentences = ["first sentence .", "another sentence that I don't like so much, I'll go there Mr. Obama."]
         SNLP_TAGGER_JAR = os.path.join("./utils/stanford-postagger-full-2018-02-27/", "stanford-postagger.jar")
@@ -48,60 +80,16 @@ class Main:
         assert(len(tokenized_sentences_SNLP) == len(sentences))
         print(tokenized_sentences_SNLP)
 
-
-        print("Loading Similarity Metrics")
-
-        self.similarity_object.load_dictionary()
-
-        self.similarity_object.load_lda()
-        self.similarity_object.load_lda_index()
-
-        self.show_topics(self.similarity_object.lda, 30, self.similarity_object.dictionary)
-
-        #self.similarity_object.load_corpus()
-
-        #self.similarity_object.load_tf_idf()
-        #self.similarity_object.load_tf_idf_index()
-
-        #self.similarity_object.tf_idf_similarity_matrix()
-        #self.similarity_object.tf_idf_train()
-
-        doc = "Holidays in Europe are becoming a danger"
-        doc = "Donald Trump did not win the majority vote"
-        doc = "Swedish relationship with Russia is getting cold"
-
-        p = Prompt(self, sys.argv[1:])
-        p.cmdloop()
-
-
-        import time
-        import sent2vec
-
         model = sent2vec.Sent2vecModel()
         model.load_model('./data/models/wiki_unigrams.bin')
         emb = model.embed_sentence("once upon a time .")
         t0 = time.time()
         embs = model.embed_sentences(["first sentence .", "another sentence"])
         print(time.time() - t0)
-
-
-
-
-
-
-
-
-
-
-        sys.exit()
-
-
         """
-        for i in lda.show_topics(200):
-            print("TOPIC:",i[0])#"\t", i[1])
-            for p, id in i[1]:
-                print(p,dict_sim[int(id)])
-        """
+
+        #sys.exit()
+
         #for i in range(0, lda.num_topics - 1):
         #    print(lda.show_topic(i))
         #documents = self.load_documents(path_documents)
@@ -110,67 +98,109 @@ class Main:
         #similarity_object.lda_train()
         #self.similarity_object.tf_idf_train()
 
-        """
-        import time
-        import pyximport
-        pyximport.install()
-        #from sent2vec.src import sent2vec
-        #import cython
-        #from sent2vec.src cimport sent2vec
+        self.fill_dataset_and_graph()
 
-        from sent2vec_file.src import sent2vec
-        t0 = time.time()
-        model = sent2vec.Sent2vecModel()
-        model.load_model('./data/models/wiki_unigrams.bin')
-        emb = model.embed_sentence("once upon a time .")
-        embs = model.embed_sentences(["first sentence .", "another sentence"])
-        print(time.time()-t0)
-        """
+        # """ UNCOMMENT
+        p = Prompt(self, sys.argv[1:])
+        p.cmdloop()
 
+        # """
 
-        documents = self.load_documents(path_documents)
-
+    def fill_dataset_and_graph(self):
+        print("Reading documents and finding entities.")
         # Fill our objects
-        self.fill_ent_doc_database(documents)
+        self.fill_ent_doc_memory_database(self.document_files, load=True)  # change to load or create
 
         # Fill our Neo4j Graph
-        graph_instance = GraphObject(self.entities, self.ent2idx)
-        # If a document doesn't have entities it will not appear in the graph
-        print("Adding entities and documents to the graph.")
+        self.graph_instance.populate(self.entities, self.ent2idx, self.documents, self.queries)
+
+        # If a document doesn't have entities it will not appear in the graph: NOT true anymore, because it will have similarities
+        print("\tAdding entities and documents to the graph.")
         for idx, document in enumerate(self.documents):
-            graph_instance.add_ent_to_doc(document)
+            self.graph_instance.add_ent_to_doc(document)
             self.update_progress(idx+1, len(self.documents))
         print('\n')
 
+        print("\tAdding similarities to the graph.")
+        for idx, document in enumerate(self.documents):
+            self.graph_instance.add_similarity_to_doc(document)
+            self.update_progress(idx+1, len(self.documents))
+        print('\n')
+
+    def make_query(self, query_text):
+        query_object = Query(self.counter_queries, query_text)
+        entities_found = self.text_to_ent_idx(query_text)
+        query_object.add_entities(entities_found)
+        doc_similarities = self.find_similarities(query_text)
+        query_object.add_similarities(doc_similarities)
+        self.queries.append(query_object)
+        self.counter_queries += 1
+        self.graph_instance.add_ent_to_doc(query_object, type='QUERY')
+        self.graph_instance.add_similarity_to_query(query_object, type='QUERY')
+
+        print("SiMILARITEISASAS", query_object.similarities)
+
+        """
         search = "Mr. Obama and Mr. Donald J. Trump both like to eat ice-creams"
         entities_found = self.text_to_ent_idx(search)
         response = graph_instance.find_documents_on_entities(entities_found)
 
-        print(response[0].get('labels'), response[0].get('name'))
-        print(response)
-        #p = Prompt(sys.argv[1:])
-        #p.cmdloop()
-
-        """
-        model_path = './data/models/model.bin'
-        model = self.load_sent2vec_model(model_path)
-        emb = model.embed_sentence("once upon a time .")
-        embs = model.embed_sentences(["first sentence .", "another sentence"])
+        # print(response[0].get('labels'), response[0].get('name'))
+        # print(response)
         """
 
     # The input format of documents should be a dataframe with columns; head & body.
     # This function is meant to fill the entities and documents.
-    def fill_ent_doc_database(self, documents):
-        for idx_doc, document in documents.iterrows():
-            """
-            if idx_doc >= 20:
-                break
-            """
-            doc_entities = self.fill_ent_database(self.counter_documents, document['body']+document['head'])
-            document_object = Document(self.counter_documents, document['head'], document['body'])
-            document_object.add_entities(doc_entities)
-            self.documents.append(document_object)
-            self.counter_documents += 1
+    def fill_ent_doc_memory_database(self, documents, load=True):
+        print("\tAdding entities, documents and similarities to our database.")
+        if load:
+
+            with open(self.ent_doc_dataset_path, 'rb') as handle:
+                from_pickle = pickle.load(handle)
+            self.entities= from_pickle["entities"]
+            self.counter_entities = from_pickle["counter_entities"]
+            self.documents = from_pickle["documents"]
+            self.ent2idx = from_pickle["ent2idx"]
+            self.documents = from_pickle["documents"]
+            self.counter_documents = from_pickle["counter_documents"]
+            self.amount_document = from_pickle["amount_documents"]
+
+        else:
+            if self.amount_documents > len(documents):
+                self.amount_documents= len(documents)
+            for idx_doc, document in documents.iterrows():
+
+                if idx_doc >= self.amount_documents:
+                    break
+                import time
+                #t0 = time.time()
+                # entities
+                doc_entities = self.fill_ent_database(self.counter_documents, document['body']+document['head'])
+                document_object = Document(self.counter_documents, document['head'], document['body'])
+                document_object.add_entities(doc_entities)
+                #t1 = time.time() -t0
+                #print("time entities:",t1 )
+                #t0 = time.time()
+                # similarities
+                doc_similarities = self.find_similarities(document['body']+document['head'])
+                document_object.add_similarities(doc_similarities)
+                #print("time similarities:",  time.time() - t0)
+                self.documents.append(document_object)
+                self.counter_documents += 1
+                self.update_progress(idx_doc+1, self.amount_documents)
+
+            to_pickle= {
+                "entities": self.entities,
+                "counter_entities": self.counter_entities,
+                "documents": self.documents,
+                "ent2idx": self.ent2idx,
+                "documents": self.documents,
+                "counter_documents":self.counter_documents,
+                "amount_documents": self.amount_documents
+            }
+            with open(self.ent_doc_dataset_path, 'wb') as handle:
+                pickle.dump(to_pickle, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            print("The dataset has been stored in", self.ent_doc_dataset_path)
 
     # Finds the entities of a text document and maintains coherence with the entities list.
     def fill_ent_database(self, doc_id, text):
@@ -193,7 +223,10 @@ class Main:
                         doc_entities.append(self.ent2idx[label])
         return doc_entities
 
-    # Finds the entities of a text document and maintains coherence with the entities list.
+    def find_similarities(self, text):
+        return self.similarity_object.query_to_lda(text, language='english', k=20, verbose = False)
+
+    # Finds the entities of a text document (??? I DONT KNOW and maintains coherence with the entities list.)
     def text_to_ent_idx(self, text):
         # Text(text) Start End Label(label_) Description
         entities = self.spacy_instance.find_entities(text)
@@ -205,8 +238,10 @@ class Main:
                 # Check if its already there in case because it could have an alias
                 if (label) in self.ent2idx:
                     entity = self.ent2idx[label]
-                    total_ent_in_database += 1
+                    #total_ent_in_database += 1
                     doc_entities.append(entity)
+                else:
+                    print("Entity <", label, ">not found in the graph")
         return doc_entities
 
     # There are some kind of buggy entities that we will filter out.

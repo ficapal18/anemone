@@ -1,5 +1,4 @@
-import cmd, sys
-
+import cmd, sys, time
 
 class Prompt(cmd.Cmd):
     intro = '\nWelcome to Anemone search engine. Type help or ? to obtain a list of commands.\n'
@@ -20,5 +19,11 @@ class Prompt(cmd.Cmd):
     def do_search(self, arg):
         'Perform a search query'
         search = input("Please enter something: ")
+        self.main_instance.make_query(search)
         self.main_instance.similarity_object.query_to_lda(search, self.main_instance.document_files)
+
         #self.main_instance.similarity_object.query_to_tf_idf(search, self.main_instance.document_files)
+
+    def do_reset(self, arg):
+        current_ts = time.time()
+        # reset all queries that have less timestamp than now
